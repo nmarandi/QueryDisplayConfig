@@ -1,10 +1,17 @@
 package main
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"syscall"
 	"unsafe"
 )
+
+// #cgo LDFLAGS: -luser32
+// #include <windows.h>
+// #include <winuser.h>
+import "C"
 
 const (
 	QDC_ALL_PATHS                  = 0x00000001
@@ -53,8 +60,8 @@ type DISPLAYCONFIG_PATH_INFO struct {
 }
 
 type POINTL struct {
-	x int32
-	y int32
+	X int32
+	Y int32
 }
 
 type DISPLAYCONFIG_RATIONAL struct {
@@ -63,17 +70,17 @@ type DISPLAYCONFIG_RATIONAL struct {
 }
 
 type DISPLAYCONFIG_VIDEO_SIGNAL_INFO struct {
-	pixelRate        uint64
-	hSyncFreq        DISPLAYCONFIG_RATIONAL
-	vSyncFreq        DISPLAYCONFIG_RATIONAL
-	activeSize       POINTL
-	totalSize        POINTL
-	videoStandard    uint32
-	scanLineOrdering uint32
+	PixelRate        uint64
+	HSyncFreq        DISPLAYCONFIG_RATIONAL
+	VSyncFreq        DISPLAYCONFIG_RATIONAL
+	ActiveSize       POINTL
+	TotalSize        POINTL
+	VideoStandard    uint32
+	ScanLineOrdering uint32
 }
 
 type DISPLAYCONFIG_TARGET_MODE struct {
-	targetVideoSignalInfo DISPLAYCONFIG_VIDEO_SIGNAL_INFO
+	TargetVideoSignalInfo DISPLAYCONFIG_VIDEO_SIGNAL_INFO
 }
 
 type DISPLAYCONFIG_MODE_INFO struct {
@@ -83,7 +90,35 @@ type DISPLAYCONFIG_MODE_INFO struct {
 	modeInfo  DISPLAYCONFIG_TARGET_MODE
 }
 
-func main() {
+func queryDisplayConfigCGO() {
+	var pathCount C.UINT32
+	var modeInfoCount C.UINT32
+	C.GetDisplayConfigBufferSizes(C.QDC_ONLY_ACTIVE_PATHS|C.QDC_VIRTUAL_MODE_AWARE, &pathCount, &modeInfoCount)
+	fmt.Println("pathCount:", pathCount, "modeInfoCount:", modeInfoCount)
+	// create a buffer of the required size for the path and mode info
+	pathInfo := make([]C.DISPLAYCONFIG_PATH_INFO, pathCount)
+	modeInfo := make([]C.DISPLAYCONFIG_MODE_INFO, modeInfoCount)
+	C.QueryDisplayConfig(C.QDC_ONLY_ACTIVE_PATHS|C.QDC_VIRTUAL_MODE_AWARE, &pathCount, &pathInfo[0], &modeInfoCount, &modeInfo[0], nil)
+	for i := 0; i < int(pathCount); i++ {
+		// print all the paths informations and status flags
+		fmt.Printf("Path %d: %d -> %d\n", i, pathInfo[i].sourceInfo.id, pathInfo[i].targetInfo.id)
+		fmt.Printf("  Source: AdapterID: %d, ID: %d, ModeInfoIdx: %+v, StatusFlags: %d %d\n",
+			pathInfo[i].sourceInfo.adapterId, pathInfo[i].sourceInfo.id, binary.LittleEndian.Uint32(pathInfo[i].sourceInfo.anon0[:]), pathInfo[i].sourceInfo.statusFlags, pathInfo[i].targetInfo.statusFlags)
+	}
+	for i := 0; i < int(modeInfoCount); i++ {
+		freq := uint32(0)
+		var targetMode DISPLAYCONFIG_TARGET_MODE
+		binary.Read(bytes.NewReader(modeInfo[i].anon0[:]), binary.LittleEndian, &targetMode)
+		if targetMode.TargetVideoSignalInfo.VSyncFreq.Denominator != 0 {
+			freq = targetMode.TargetVideoSignalInfo.VSyncFreq.Numerator / targetMode.TargetVideoSignalInfo.VSyncFreq.Denominator
+		} else {
+			freq = 0
+		}
+		fmt.Printf("Mode %d: %d x %d @ %d Hz\n", i, targetMode.TargetVideoSignalInfo.ActiveSize.X, targetMode.TargetVideoSignalInfo.ActiveSize.Y, freq)
+	}
+}
+
+func queryDisplayConfigSyscall() {
 	pathCount := uint32(0)
 	modeInfoCount := uint32(0)
 	r, _, err := GetDisplayConfigBufferSizes.Call(QDC_ONLY_ACTIVE_PATHS|QDC_VIRTUAL_MODE_AWARE, uintptr(unsafe.Pointer(&pathCount)), uintptr(unsafe.Pointer(&modeInfoCount)))
@@ -107,11 +142,18 @@ func main() {
 	}
 	for i := uint32(0); i < modeInfoCount; i++ {
 		freq := uint32(0)
-		if modeInfo[i].modeInfo.targetVideoSignalInfo.vSyncFreq.Denominator != 0 {
-			freq = modeInfo[i].modeInfo.targetVideoSignalInfo.vSyncFreq.Numerator / modeInfo[i].modeInfo.targetVideoSignalInfo.vSyncFreq.Denominator
+		if modeInfo[i].modeInfo.TargetVideoSignalInfo.VSyncFreq.Denominator != 0 {
+			freq = modeInfo[i].modeInfo.TargetVideoSignalInfo.VSyncFreq.Numerator / modeInfo[i].modeInfo.TargetVideoSignalInfo.VSyncFreq.Denominator
 		} else {
 			freq = 0
 		}
-		fmt.Printf("Mode %d: %d x %d @ %d Hz\n", i, modeInfo[i].modeInfo.targetVideoSignalInfo.activeSize.x, modeInfo[i].modeInfo.targetVideoSignalInfo.activeSize.y, freq)
+		fmt.Printf("Mode %d: %d x %d @ %d Hz\n", i, modeInfo[i].modeInfo.TargetVideoSignalInfo.ActiveSize.X, modeInfo[i].modeInfo.TargetVideoSignalInfo.ActiveSize.Y, freq)
 	}
+}
+
+func main() {
+	fmt.Println("-----QueryDisplayConfig using CGO-----")
+	queryDisplayConfigCGO()
+	fmt.Println("-----QueryDisplayConfig using syscall-----")
+	queryDisplayConfigSyscall()
 }
