@@ -6,6 +6,7 @@ This Go program provides two methods for querying display configuration informat
 
 - This program is intended to run on a Windows system.
 - Ensure that you have a valid Go environment set up.
+- GCC for Windows is required for the CGO method. You can download it from [MinGW](https://www.mingw-w64.org/downloads/).
 
 ## How to Use
 
